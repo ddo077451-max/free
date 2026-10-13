@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Панель администратора — Конференции.РФ{% endblock %}
+{% block content %}
+<section>
+  <h1>Панель администратора</h1>
+
+  <form method="get" class="filter">
+    <label>Фильтр по статусу
+      <select name="status" onchange="this.form.submit()">
+        <option value="">Все</option>
+        {% for s in STATUSES %}
+          <option value="{{ s }}" {{ 'selected' if current == s else '' }}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </form>
+
+  <table class="admin-table">
+    <thead>
+      <tr><th>№</th><th>Пользователь</th><th>Помещение</th><th>Дата</th><th>Оплата</th><th>Статус</th></tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-testid="admin-row">
+        <td data-label="№">{{ r.id }}</td>
+        <td data-label="Пользователь">{{ r.full_name }} ({{ r.login }})</td>
+        <td data-label="Помещение">{{ r.room }}</td>
+        <td data-label="Дата">{{ r.start_date|ru_date }}</td>
+        <td data-label="Оплата">{{ r.payment }}</td>
+        <td data-label="Статус">
+          <form method="post" action="{{ url_for('admin_status', rid=r.id, status=current) }}">
+            <select name="status" data-testid="admin-status" onchange="this.form.submit()">
+              {% for s in STATUSES %}
+                <option value="{{ s }}" {{ 'selected' if r.status == s else '' }}>{{ s }}</option>
+              {% endfor %}
+            </select>
+            <noscript><button type="submit">OK</button></noscript>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">Заявок нет.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

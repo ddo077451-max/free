@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Мои заявки — Конференции.РФ{% endblock %}
+{% block content %}
+<section>
+  <h1>Мои заявки</h1>
+  <p><a class="btn" href="{{ url_for('request_new') }}">+ Новая заявка</a></p>
+
+  <div data-testid="req-list" class="card-list">
+    {% for r in rows %}
+    <article class="card request-card">
+      <h2>{{ r.room }}</h2>
+      <p>Дата начала: <b>{{ r.start_date|ru_date }}</b></p>
+      <p>Оплата: {{ r.payment }}</p>
+      <p>Статус: <span class="badge st-{{ loop.index0 }}">{{ r.status }}</span></p>
+
+      <form method="post" action="{{ url_for('request_review', rid=r.id) }}">
+        <textarea name="review" data-testid="req-review" rows="2"
+                  placeholder="{{ 'Ваш отзыв о мероприятии' if r.status == 'Завершено' else 'Отзыв доступен после завершения мероприятия' }}"
+                  {{ '' if r.status == 'Завершено' else 'disabled' }}>{{ r.review or '' }}</textarea>
+        {% if r.status == 'Завершено' %}<button class="btn btn-small" type="submit">Оставить отзыв</button>{% endif %}
+      </form>
+
+      <div class="actions">
+        <a class="btn btn-small btn-light" href="{{ url_for('request_edit', rid=r.id) }}">Изменить</a>
+        <form method="post" action="{{ url_for('request_delete', rid=r.id) }}"
+              onsubmit="return confirm('Удалить заявку?')">
+          <button class="btn btn-small btn-danger" type="submit">Удалить</button>
+        </form>
+      </div>
+    </article>
+    {% else %}
+      <p class="muted">У вас пока нет заявок.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

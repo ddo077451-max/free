@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Регистрация — Конференции.РФ{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>Регистрация</h1>
+  <form method="post" novalidate>
+    <label>Логин
+      <input type="text" name="login" data-testid="reg-login" value="{{ form.get('login','') }}"
+             placeholder="латиница и цифры, от 6 символов">
+    </label>
+    {% if errors.login %}<p class="field-error">{{ errors.login }}</p>{% endif %}
+
+    <label>Пароль
+      <input type="password" name="password" data-testid="reg-password" placeholder="минимум 8 символов">
+    </label>
+    {% if errors.password %}<p class="field-error">{{ errors.password }}</p>{% endif %}
+
+    <label>ФИО
+      <input type="text" name="full_name" data-testid="reg-fullname" value="{{ form.get('full_name','') }}"
+             placeholder="Иванов Иван Иванович">
+    </label>
+    {% if errors.full_name %}<p class="field-error">{{ errors.full_name }}</p>{% endif %}
+
+    <label>Телефон
+      <input type="text" name="phone" data-testid="reg-phone" value="{{ form.get('phone','') }}"
+             placeholder="8(999)123-45-67">
+    </label>
+    {% if errors.phone %}<p class="field-error">{{ errors.phone }}</p>{% endif %}
+
+    <label>E-mail
+      <input type="text" name="email" data-testid="reg-email" value="{{ form.get('email','') }}"
+             placeholder="name@mail.ru">
+    </label>
+    {% if errors.email %}<p class="field-error">{{ errors.email }}</p>{% endif %}
+
+    <button type="submit" class="btn" data-testid="reg-submit">Создать пользователя</button>
+  </form>
+  <p class="switch-link"><a href="{{ url_for('login') }}">Уже есть аккаунт? Войти</a></p>
+</section>
+{% endblock %}

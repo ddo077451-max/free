@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 360" font-family="Arial, sans-serif" font-size="14">
+  <rect width="760" height="360" fill="#ffffff"/>
+  <text x="380" y="28" text-anchor="middle" font-size="18" font-weight="bold">ER-диаграмма: Конференции.РФ</text>
+
+  <rect x="30" y="50" width="280" height="270" fill="#eef3ff" stroke="#2b5fd9" stroke-width="2" rx="6"/>
+  <rect x="30" y="50" width="280" height="30" fill="#2b5fd9" rx="6"/>
+  <text x="170" y="71" text-anchor="middle" fill="#fff" font-weight="bold">users</text>
+  <text x="44" y="105">PK  id : INTEGER</text>
+  <text x="44" y="130">login : TEXT UNIQUE NOT NULL</text>
+  <text x="44" y="155">password : TEXT (хэш)</text>
+  <text x="44" y="180">full_name : TEXT</text>
+  <text x="44" y="205">phone : TEXT</text>
+  <text x="44" y="230">email : TEXT</text>
+  <text x="44" y="255">role : TEXT ('user' | 'admin')</text>
+  <text x="44" y="280">created_at : TEXT</text>
+
+  <rect x="450" y="50" width="280" height="270" fill="#eef9f1" stroke="#2e9e5b" stroke-width="2" rx="6"/>
+  <rect x="450" y="50" width="280" height="30" fill="#2e9e5b" rx="6"/>
+  <text x="590" y="71" text-anchor="middle" fill="#fff" font-weight="bold">requests</text>
+  <text x="464" y="105">PK  id : INTEGER</text>
+  <text x="464" y="130">FK  user_id : INTEGER → users.id</text>
+  <text x="464" y="155">room : TEXT</text>
+  <text x="464" y="180">start_date : TEXT (ГГГГ-ММ-ДД)</text>
+  <text x="464" y="205">payment : TEXT</text>
+  <text x="464" y="230">status : TEXT (Новая / Мероприятие</text>
+  <text x="464" y="248">назначено / Завершено)</text>
+  <text x="464" y="273">review : TEXT</text>
+  <text x="464" y="298">created_at : TEXT</text>
+
+  <line x1="310" y1="130" x2="450" y2="130" stroke="#333" stroke-width="2"/>
+  <text x="318" y="122">1</text>
+  <text x="432" y="122">N</text>
+  <text x="380" y="150" text-anchor="middle" font-size="12">создаёт</text>
+</svg>

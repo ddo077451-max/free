@@ -1,0 +1,862 @@
+
+################ ФАЙЛ: README.md ################
+# Конференции.РФ — проект для демонстрационного экзамена 09.02.07 (2027)
+
+Стек: **HTML + CSS (+ Bootstrap) / Python Flask / SQLite / SQL**. Запуск: `pip install flask` → `python app.py` → http://localhost:5000
+
+## Структура и что делает каждый файл (ТЗ)
+
+| Файл | Что делает | Задание |
+|---|---|---|
+| `app.py` | Бэкенд: маршруты, валидация, работа с БД, права доступа, CRUD заявок, смена статусов | 1.1, 1.5, 3.2, 3.4 |
+| `schema.sql` | Создание таблиц `users` и `requests`, связь 1→N, проверки значений | 1.5, 3.2, 3.7 |
+| `templates/base.html` | Общий шаблон: `lang="ru"`, `header`/`nav`/`main`/`footer`, подключение CSS и Bootstrap | 3.1, 3.5 |
+| `templates/register.html` | Регистрация: логин (лат+цифры ≥6), пароль ≥8, ФИО (кириллица), телефон `8(XXX)XXX-XX-XX`, e-mail; ошибки на форме; `data-testid="reg-*"` | 1.2 |
+| `templates/login.html` | Вход, сообщение об ошибке, ссылка «Еще не зарегистрированы? Регистрация»; `data-testid="login-*"` | 1.2 |
+| `templates/request_form.html` | Создание/редактирование заявки: помещение (текст), дата (текст), оплата (select); `data-testid="req-*"` | 1.3, 3.2 |
+| `templates/requests.html` | Мои заявки (`req-list`), отзыв (`req-review`, активен только при «Завершено»), изменить/удалить | 1.3, 3.2 |
+| `templates/admin.html` | Панель админа: все заявки (`admin-row`), смена статуса (`admin-status`), фильтр по статусу | 1.4, 3.4 |
+| `static/style.css` | Единый стиль, адаптив 390×844, анимации и hover-эффекты | 2.1, 3.1, 3.6 |
+| `db_diagram.svg` | ER-диаграмма (положить в папку проекта) | 3.7 |
+| `api4/app.py` | Модуль 4: `GET /orders`, обработка данных, фильтры `status`/`user_id`, ошибки 400/500, порт 8080 | 4.2–4.5 |
+
+## Правила работы (логика из ТЗ)
+- Админ: логин `Conf2027`, пароль `Demo77` (создаётся при старте в `init_db`). Вход на той же странице входа → перенаправление в `/admin`.
+- Статусы: `Новая` → `Мероприятие назначено` → `Завершено`.
+- Оплата: `При очном посещении` / `Перевод по СБП`.
+- Дата принимается как `ДД.ММ.ГГГГ` или `ГГГГ-ММ-ДД`, хранится ISO.
+- CSRF-защиты нет — автотест сможет отправлять формы.
+
+## Перед экзаменом
+1. Скопируйте `bootstrap.min.css` из публичной папки сервера в `static/vendor/` (интернета не будет, задание 3.3 ищет библиотеку).
+2. Модуль 4: откройте `Прил_4` и сверьте имена таблиц/полей и русские названия статусов с `api4/app.py` (блок SCHEMA / STATUS_RU). Дамп `shop_db.sql` для SQLite: `sqlite3 shop.db < shop_db.sql`.
+3. Для задания 4.4 при нескольких БД задайте `DB_PATH`.
+
+## Git (задания 1.6, 3.7)
+```
+git init
+git add .
+git commit -m "Начало: структура проекта и схема БД"
+# ... работа ...
+git add .
+git commit -m "Завершение: функционал, дизайн, диаграмма БД"
+git remote add origin https://github.com/<логин>/<репозиторий>.git
+git branch -M main
+git push -u origin main
+```
+Архивы: `project_1.zip`, `project_3.zip` (папка проекта с `.git`), `layout_2.zip` (макеты + исходник дизайна).
+
+################ ФАЙЛ: schema.sql ################
+-- Схема БД портала «Конференции.РФ» (SQLite)
+-- users    - пользователи (обычные и администратор)
+-- requests - заявки на бронирование помещения (связь: users 1 -> N requests)
+
+CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    login      TEXT NOT NULL UNIQUE,
+    password   TEXT NOT NULL,              -- хэш пароля
+    full_name  TEXT NOT NULL,
+    phone      TEXT NOT NULL,
+    email      TEXT NOT NULL,
+    role       TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS requests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    room       TEXT NOT NULL,              -- название помещения (текстом)
+    start_date TEXT NOT NULL,              -- дата начала, ISO ГГГГ-ММ-ДД
+    payment    TEXT NOT NULL CHECK (payment IN ('При очном посещении','Перевод по СБП')),
+    status     TEXT NOT NULL DEFAULT 'Новая'
+               CHECK (status IN ('Новая','Мероприятие назначено','Завершено')),
+    review     TEXT,                       -- отзыв (только после «Завершено»)
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+################ ФАЙЛ: app.py ################
+"""
+Портал «Конференции.РФ» - бэкенд (Flask + SQLite).
+Запуск:  pip install flask   ->   python app.py   ->   http://localhost:5000
+CSRF-защиты нет (в Flask по умолчанию её нет) - автотест сможет отправлять формы.
+"""
+import os
+import re
+import sqlite3
+from datetime import datetime
+from functools import wraps
+
+from flask import (Flask, g, render_template, request, redirect,
+                   url_for, session, flash, abort)
+from werkzeug.security import generate_password_hash, check_password_hash
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE, "conf.db")
+
+ADMIN_LOGIN = "Conf2027"
+ADMIN_PASSWORD = "Demo77"
+
+STATUSES = ["Новая", "Мероприятие назначено", "Завершено"]
+PAYMENTS = ["При очном посещении", "Перевод по СБП"]
+
+app = Flask(__name__)
+app.secret_key = "conf-2027-demo-secret"
+
+
+# ---------------------------------------------------------------- БД
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA foreign_keys = ON")
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(_exc):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db():
+    """Создаёт таблицы и учётную запись администратора."""
+    db = sqlite3.connect(DB_PATH)
+    with open(os.path.join(BASE, "schema.sql"), encoding="utf-8") as f:
+        db.executescript(f.read())
+    exists = db.execute("SELECT 1 FROM users WHERE login=?", (ADMIN_LOGIN,)).fetchone()
+    if not exists:
+        db.execute(
+            "INSERT INTO users(login,password,full_name,phone,email,role) VALUES(?,?,?,?,?,'admin')",
+            (ADMIN_LOGIN, generate_password_hash(ADMIN_PASSWORD),
+             "Администратор", "8(000)000-00-00", "admin@conf.ru"))
+    db.commit()
+    db.close()
+
+
+# ---------------------------------------------------------------- вспомогательное
+def parse_date(text):
+    """Принимает ДД.ММ.ГГГГ или ГГГГ-ММ-ДД, возвращает ISO-строку или None."""
+    text = (text or "").strip()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return None
+
+
+@app.template_filter("ru_date")
+def ru_date(iso):
+    try:
+        return datetime.strptime(iso, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except (ValueError, TypeError):
+        return iso
+
+
+def current_user():
+    uid = session.get("uid")
+    if not uid:
+        return None
+    return get_db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+
+
+@app.context_processor
+def inject_user():
+    return {"user": current_user(), "STATUSES": STATUSES, "PAYMENTS": PAYMENTS}
+
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        if not current_user():
+            return redirect(url_for("login"))
+        return fn(*a, **kw)
+    return wrapper
+
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        u = current_user()
+        if not u:
+            return redirect(url_for("login"))
+        if u["role"] != "admin":
+            abort(403)
+        return fn(*a, **kw)
+    return wrapper
+
+
+def validate_registration(f):
+    """Возвращает словарь ошибок {поле: текст}."""
+    e = {}
+    if not re.fullmatch(r"[A-Za-z0-9]{6,}", f["login"]):
+        e["login"] = "Логин: только латиница и цифры, не менее 6 символов"
+    if len(f["password"]) < 8:
+        e["password"] = "Пароль: не менее 8 символов"
+    if not re.fullmatch(r"[А-Яа-яЁё ]+", f["full_name"]) or not f["full_name"].strip():
+        e["full_name"] = "ФИО: только кириллица и пробелы"
+    if not re.fullmatch(r"8\(\d{3}\)\d{3}-\d{2}-\d{2}", f["phone"]):
+        e["phone"] = "Телефон в формате 8(XXX)XXX-XX-XX"
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", f["email"]):
+        e["email"] = "Введите корректный e-mail"
+    return e
+
+
+# ---------------------------------------------------------------- авторизация
+@app.route("/")
+def index():
+    u = current_user()
+    if not u:
+        return redirect(url_for("login"))
+    return redirect(url_for("admin" if u["role"] == "admin" else "requests_list"))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    errors, form = {}, {}
+    if request.method == "POST":
+        form = {k: request.form.get(k, "").strip()
+                for k in ("login", "password", "full_name", "phone", "email")}
+        errors = validate_registration(form)
+        for k, v in form.items():
+            if not v:
+                errors[k] = "Поле обязательно для заполнения"
+        if not errors:
+            db = get_db()
+            if db.execute("SELECT 1 FROM users WHERE login=?", (form["login"],)).fetchone():
+                errors["login"] = "Такой логин уже занят"
+            else:
+                db.execute(
+                    "INSERT INTO users(login,password,full_name,phone,email) VALUES(?,?,?,?,?)",
+                    (form["login"], generate_password_hash(form["password"]),
+                     form["full_name"], form["phone"], form["email"]))
+                db.commit()
+                flash("Регистрация прошла успешно. Войдите в систему.", "ok")
+                return redirect(url_for("login"))
+    return render_template("register.html", errors=errors, form=form)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        login_ = request.form.get("login", "").strip()
+        password = request.form.get("password", "")
+        row = get_db().execute("SELECT * FROM users WHERE login=?", (login_,)).fetchone()
+        if row and check_password_hash(row["password"], password):
+            session["uid"] = row["id"]
+            return redirect(url_for("admin" if row["role"] == "admin" else "requests_list"))
+        error = "Неверный логин или пароль"
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------- заявки пользователя
+@app.route("/requests")
+@login_required
+def requests_list():
+    u = current_user()
+    rows = get_db().execute(
+        "SELECT * FROM requests WHERE user_id=? ORDER BY id DESC", (u["id"],)).fetchall()
+    return render_template("requests.html", rows=rows)
+
+
+def read_request_form():
+    room = request.form.get("room", "").strip()
+    date_iso = parse_date(request.form.get("start_date"))
+    payment = request.form.get("payment", "")
+    errors = {}
+    if not room:
+        errors["room"] = "Укажите помещение"
+    if not date_iso:
+        errors["start_date"] = "Дата в формате ДД.ММ.ГГГГ"
+    if payment not in PAYMENTS:
+        errors["payment"] = "Выберите способ оплаты"
+    return room, date_iso, payment, errors
+
+
+@app.route("/requests/new", methods=["GET", "POST"])
+@login_required
+def request_new():
+    errors, form = {}, {}
+    if request.method == "POST":
+        room, date_iso, payment, errors = read_request_form()
+        form = {"room": room, "start_date": request.form.get("start_date", ""), "payment": payment}
+        if not errors:
+            db = get_db()
+            db.execute("INSERT INTO requests(user_id,room,start_date,payment) VALUES(?,?,?,?)",
+                       (current_user()["id"], room, date_iso, payment))
+            db.commit()
+            return redirect(url_for("requests_list"))
+    return render_template("request_form.html", errors=errors, form=form, edit=False)
+
+
+@app.route("/requests/<int:rid>/edit", methods=["GET", "POST"])
+@login_required
+def request_edit(rid):
+    db = get_db()
+    row = db.execute("SELECT * FROM requests WHERE id=? AND user_id=?",
+                     (rid, current_user()["id"])).fetchone()
+    if not row:
+        abort(404)
+    errors = {}
+    form = {"room": row["room"], "start_date": ru_date(row["start_date"]), "payment": row["payment"]}
+    if request.method == "POST":
+        room, date_iso, payment, errors = read_request_form()
+        form = {"room": room, "start_date": request.form.get("start_date", ""), "payment": payment}
+        if not errors:
+            db.execute("UPDATE requests SET room=?, start_date=?, payment=? WHERE id=?",
+                       (room, date_iso, payment, rid))
+            db.commit()
+            return redirect(url_for("requests_list"))
+    return render_template("request_form.html", errors=errors, form=form, edit=True, rid=rid)
+
+
+@app.route("/requests/<int:rid>/delete", methods=["POST"])
+@login_required
+def request_delete(rid):
+    db = get_db()
+    db.execute("DELETE FROM requests WHERE id=? AND user_id=?", (rid, current_user()["id"]))
+    db.commit()
+    return redirect(url_for("requests_list"))
+
+
+@app.route("/requests/<int:rid>/review", methods=["POST"])
+@login_required
+def request_review(rid):
+    db = get_db()
+    row = db.execute("SELECT * FROM requests WHERE id=? AND user_id=?",
+                     (rid, current_user()["id"])).fetchone()
+    if not row:
+        abort(404)
+    if row["status"] != "Завершено":
+        flash("Отзыв можно оставить только после завершения мероприятия.", "err")
+    else:
+        db.execute("UPDATE requests SET review=? WHERE id=?",
+                   (request.form.get("review", "").strip(), rid))
+        db.commit()
+        flash("Спасибо за отзыв!", "ok")
+    return redirect(url_for("requests_list"))
+
+
+# ---------------------------------------------------------------- панель администратора
+@app.route("/admin")
+@admin_required
+def admin():
+    status = request.args.get("status", "")
+    sql = ("SELECT r.*, u.login, u.full_name FROM requests r "
+           "JOIN users u ON u.id=r.user_id")
+    params = ()
+    if status in STATUSES:
+        sql += " WHERE r.status=?"
+        params = (status,)
+    rows = get_db().execute(sql + " ORDER BY r.id DESC", params).fetchall()
+    return render_template("admin.html", rows=rows, current=status)
+
+
+@app.route("/admin/<int:rid>/status", methods=["POST"])
+@admin_required
+def admin_status(rid):
+    status = request.form.get("status", "")
+    if status not in STATUSES:
+        abort(400)
+    db = get_db()
+    db.execute("UPDATE requests SET status=? WHERE id=?", (status, rid))
+    db.commit()
+    return redirect(url_for("admin", status=request.args.get("status", "")))
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run(host="0.0.0.0", port=5000, debug=False)
+
+################ ФАЙЛ: templates/base.html ################
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Конференции.РФ{% endblock %}</title>
+  <!-- Bootstrap: скопируйте bootstrap.min.css из публичной папки сервера в static/vendor/ -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="{{ url_for('index') }}">Конференции<span>.РФ</span></a>
+    <nav>
+      {% if user %}
+        {% if user.role == 'admin' %}
+          <a href="{{ url_for('admin') }}">Панель</a>
+        {% else %}
+          <a href="{{ url_for('requests_list') }}">Мои заявки</a>
+          <a href="{{ url_for('request_new') }}">Новая заявка</a>
+        {% endif %}
+        <a href="{{ url_for('logout') }}">Выйти</a>
+      {% else %}
+        <a href="{{ url_for('login') }}">Вход</a>
+        <a href="{{ url_for('register') }}">Регистрация</a>
+      {% endif %}
+    </nav>
+  </header>
+
+  <main class="container-box">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}
+        <div class="flash flash-{{ cat }}">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <p>© 2027 Конференции.РФ — бронирование помещений для Всероссийских конференций</p>
+  </footer>
+</body>
+</html>
+
+################ ФАЙЛ: templates/register.html ################
+{% extends "base.html" %}
+{% block title %}Регистрация — Конференции.РФ{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>Регистрация</h1>
+  <form method="post" novalidate>
+    <label>Логин
+      <input type="text" name="login" data-testid="reg-login" value="{{ form.get('login','') }}"
+             placeholder="латиница и цифры, от 6 символов">
+    </label>
+    {% if errors.login %}<p class="field-error">{{ errors.login }}</p>{% endif %}
+
+    <label>Пароль
+      <input type="password" name="password" data-testid="reg-password" placeholder="минимум 8 символов">
+    </label>
+    {% if errors.password %}<p class="field-error">{{ errors.password }}</p>{% endif %}
+
+    <label>ФИО
+      <input type="text" name="full_name" data-testid="reg-fullname" value="{{ form.get('full_name','') }}"
+             placeholder="Иванов Иван Иванович">
+    </label>
+    {% if errors.full_name %}<p class="field-error">{{ errors.full_name }}</p>{% endif %}
+
+    <label>Телефон
+      <input type="text" name="phone" data-testid="reg-phone" value="{{ form.get('phone','') }}"
+             placeholder="8(999)123-45-67">
+    </label>
+    {% if errors.phone %}<p class="field-error">{{ errors.phone }}</p>{% endif %}
+
+    <label>E-mail
+      <input type="text" name="email" data-testid="reg-email" value="{{ form.get('email','') }}"
+             placeholder="name@mail.ru">
+    </label>
+    {% if errors.email %}<p class="field-error">{{ errors.email }}</p>{% endif %}
+
+    <button type="submit" class="btn" data-testid="reg-submit">Создать пользователя</button>
+  </form>
+  <p class="switch-link"><a href="{{ url_for('login') }}">Уже есть аккаунт? Войти</a></p>
+</section>
+{% endblock %}
+
+################ ФАЙЛ: templates/login.html ################
+{% extends "base.html" %}
+{% block title %}Вход — Конференции.РФ{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>Вход</h1>
+  {% if error %}<p class="field-error">{{ error }}</p>{% endif %}
+  <form method="post">
+    <label>Логин
+      <input type="text" name="login" data-testid="login-login" required>
+    </label>
+    <label>Пароль
+      <input type="password" name="password" data-testid="login-password" required>
+    </label>
+    <button type="submit" class="btn" data-testid="login-submit">Войти</button>
+  </form>
+  <p class="switch-link"><a href="{{ url_for('register') }}">Еще не зарегистрированы? Регистрация</a></p>
+</section>
+{% endblock %}
+
+################ ФАЙЛ: templates/request_form.html ################
+{% extends "base.html" %}
+{% block title %}{{ 'Редактирование заявки' if edit else 'Новая заявка' }} — Конференции.РФ{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>{{ 'Редактирование заявки' if edit else 'Новая заявка' }}</h1>
+  <form method="post" novalidate>
+    <label>Помещение (аудитория, коворкинг, кинозал)
+      <input type="text" name="room" data-testid="req-room" value="{{ form.get('room','') }}"
+             placeholder="Например: Аудитория 101">
+    </label>
+    {% if errors.room %}<p class="field-error">{{ errors.room }}</p>{% endif %}
+
+    <label>Дата начала
+      <input type="text" name="start_date" data-testid="req-date" value="{{ form.get('start_date','') }}"
+             placeholder="ДД.ММ.ГГГГ">
+    </label>
+    {% if errors.start_date %}<p class="field-error">{{ errors.start_date }}</p>{% endif %}
+
+    <label>Способ оплаты
+      <select name="payment" data-testid="req-payment">
+        {% for p in PAYMENTS %}
+          <option value="{{ p }}" {{ 'selected' if form.get('payment') == p else '' }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if errors.payment %}<p class="field-error">{{ errors.payment }}</p>{% endif %}
+
+    <button type="submit" class="btn" data-testid="req-submit">{{ 'Сохранить' if edit else 'Отправить' }}</button>
+  </form>
+</section>
+{% endblock %}
+
+################ ФАЙЛ: templates/requests.html ################
+{% extends "base.html" %}
+{% block title %}Мои заявки — Конференции.РФ{% endblock %}
+{% block content %}
+<section>
+  <h1>Мои заявки</h1>
+  <p><a class="btn" href="{{ url_for('request_new') }}">+ Новая заявка</a></p>
+
+  <div data-testid="req-list" class="card-list">
+    {% for r in rows %}
+    <article class="card request-card">
+      <h2>{{ r.room }}</h2>
+      <p>Дата начала: <b>{{ r.start_date|ru_date }}</b></p>
+      <p>Оплата: {{ r.payment }}</p>
+      <p>Статус: <span class="badge st-{{ loop.index0 }}">{{ r.status }}</span></p>
+
+      <form method="post" action="{{ url_for('request_review', rid=r.id) }}">
+        <textarea name="review" data-testid="req-review" rows="2"
+                  placeholder="{{ 'Ваш отзыв о мероприятии' if r.status == 'Завершено' else 'Отзыв доступен после завершения мероприятия' }}"
+                  {{ '' if r.status == 'Завершено' else 'disabled' }}>{{ r.review or '' }}</textarea>
+        {% if r.status == 'Завершено' %}<button class="btn btn-small" type="submit">Оставить отзыв</button>{% endif %}
+      </form>
+
+      <div class="actions">
+        <a class="btn btn-small btn-light" href="{{ url_for('request_edit', rid=r.id) }}">Изменить</a>
+        <form method="post" action="{{ url_for('request_delete', rid=r.id) }}"
+              onsubmit="return confirm('Удалить заявку?')">
+          <button class="btn btn-small btn-danger" type="submit">Удалить</button>
+        </form>
+      </div>
+    </article>
+    {% else %}
+      <p class="muted">У вас пока нет заявок.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
+
+################ ФАЙЛ: templates/admin.html ################
+{% extends "base.html" %}
+{% block title %}Панель администратора — Конференции.РФ{% endblock %}
+{% block content %}
+<section>
+  <h1>Панель администратора</h1>
+
+  <form method="get" class="filter">
+    <label>Фильтр по статусу
+      <select name="status" onchange="this.form.submit()">
+        <option value="">Все</option>
+        {% for s in STATUSES %}
+          <option value="{{ s }}" {{ 'selected' if current == s else '' }}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </form>
+
+  <table class="admin-table">
+    <thead>
+      <tr><th>№</th><th>Пользователь</th><th>Помещение</th><th>Дата</th><th>Оплата</th><th>Статус</th></tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-testid="admin-row">
+        <td data-label="№">{{ r.id }}</td>
+        <td data-label="Пользователь">{{ r.full_name }} ({{ r.login }})</td>
+        <td data-label="Помещение">{{ r.room }}</td>
+        <td data-label="Дата">{{ r.start_date|ru_date }}</td>
+        <td data-label="Оплата">{{ r.payment }}</td>
+        <td data-label="Статус">
+          <form method="post" action="{{ url_for('admin_status', rid=r.id, status=current) }}">
+            <select name="status" data-testid="admin-status" onchange="this.form.submit()">
+              {% for s in STATUSES %}
+                <option value="{{ s }}" {{ 'selected' if r.status == s else '' }}>{{ s }}</option>
+              {% endfor %}
+            </select>
+            <noscript><button type="submit">OK</button></noscript>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">Заявок нет.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+
+################ ФАЙЛ: static/style.css ################
+/* Единый стиль портала «Конференции.РФ». Адаптив под 390x844. */
+:root {
+  --primary: #2b5fd9;
+  --primary-dark: #1d44a3;
+  --bg: #f3f6fc;
+  --card: #ffffff;
+  --text: #1c2540;
+  --muted: #6b7690;
+  --danger: #d94a4a;
+  --ok: #2e9e5b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font-family: "Segoe UI", Roboto, Arial, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  min-height: 100vh; display: flex; flex-direction: column;
+}
+h1 { font-size: 1.8rem; margin: 0 0 16px; }
+h2 { font-size: 1.2rem; margin: 0 0 8px; }
+
+.site-header {
+  background: var(--primary); color: #fff; padding: 12px 20px;
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+}
+.logo { color: #fff; font-weight: 700; font-size: 1.3rem; text-decoration: none; }
+.logo span { opacity: .75; }
+.site-header nav a {
+  color: #fff; margin-left: 16px; text-decoration: none; position: relative;
+}
+.site-header nav a::after {              /* микроанимация: подчёркивание при наведении */
+  content: ""; position: absolute; left: 0; bottom: -3px; width: 0; height: 2px;
+  background: #fff; transition: width .25s;
+}
+.site-header nav a:hover::after { width: 100%; }
+
+.container-box { flex: 1; width: 100%; max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+.card {
+  background: var(--card); border-radius: 14px; padding: 20px;
+  box-shadow: 0 4px 16px rgba(30, 50, 100, .08);
+  animation: fadeUp .5s ease both;
+  transition: transform .2s, box-shadow .2s;
+}
+.card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(30, 50, 100, .14); }
+.auth-card { max-width: 440px; margin: 0 auto; }
+
+@keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+label { display: block; margin-bottom: 12px; font-weight: 600; font-size: .95rem; }
+input, select, textarea {
+  display: block; width: 100%; margin-top: 4px; padding: 10px 12px;
+  border: 1px solid #cdd5e6; border-radius: 8px; font: inherit; background: #fff;
+  transition: border-color .2s, box-shadow .2s;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(43, 95, 217, .18);
+}
+textarea:disabled { background: #eef1f7; color: var(--muted); }
+
+.btn {
+  display: inline-block; padding: 10px 20px; border: 0; border-radius: 8px;
+  background: var(--primary); color: #fff; font: inherit; font-weight: 600;
+  cursor: pointer; text-decoration: none;
+  transition: background .2s, transform .15s;
+}
+.btn:hover { background: var(--primary-dark); transform: translateY(-2px); }
+.btn:active { transform: scale(.97); }
+.btn-small { padding: 6px 12px; font-size: .9rem; }
+.btn-light { background: #e6ecfa; color: var(--primary); }
+.btn-light:hover { background: #d3dcf5; }
+.btn-danger { background: var(--danger); }
+.btn-danger:hover { background: #b83838; }
+
+.field-error { color: var(--danger); margin: -6px 0 10px; font-size: .88rem; }
+.flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; animation: fadeUp .4s ease both; }
+.flash-ok { background: #dff3e7; color: #1f6b3d; }
+.flash-err { background: #fbe3e3; color: #8f2b2b; }
+.switch-link { text-align: center; margin-top: 16px; }
+.switch-link a { color: var(--primary); }
+.muted { color: var(--muted); }
+
+.card-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 16px; }
+.actions { display: flex; gap: 8px; margin-top: 10px; }
+.actions form { margin: 0; }
+.badge { padding: 2px 10px; border-radius: 12px; background: #e6ecfa; color: var(--primary); font-size: .85rem; }
+
+.filter { max-width: 320px; margin-bottom: 16px; }
+.admin-table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 12px; overflow: hidden; }
+.admin-table th, .admin-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e3e8f3; }
+.admin-table th { background: #e6ecfa; }
+.admin-table tbody tr { transition: background .2s; }
+.admin-table tbody tr:hover { background: #f0f4fd; }
+
+.site-footer { text-align: center; padding: 16px; color: var(--muted); font-size: .85rem; }
+
+/* Мобильная версия (390x844): таблица превращается в карточки */
+@media (max-width: 600px) {
+  h1 { font-size: 1.5rem; }
+  .site-header { flex-direction: column; align-items: flex-start; }
+  .site-header nav a { margin: 0 14px 0 0; }
+  .admin-table thead { display: none; }
+  .admin-table, .admin-table tbody, .admin-table tr, .admin-table td { display: block; width: 100%; }
+  .admin-table tr { margin-bottom: 12px; border-radius: 12px; box-shadow: 0 2px 10px rgba(30,50,100,.1); background: #fff; }
+  .admin-table td { border: 0; padding: 6px 14px; }
+  .admin-table td::before { content: attr(data-label) ": "; font-weight: 600; color: var(--muted); }
+}
+
+################ ФАЙЛ: db_diagram.svg ################
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 360" font-family="Arial, sans-serif" font-size="14">
+  <rect width="760" height="360" fill="#ffffff"/>
+  <text x="380" y="28" text-anchor="middle" font-size="18" font-weight="bold">ER-диаграмма: Конференции.РФ</text>
+
+  <rect x="30" y="50" width="280" height="270" fill="#eef3ff" stroke="#2b5fd9" stroke-width="2" rx="6"/>
+  <rect x="30" y="50" width="280" height="30" fill="#2b5fd9" rx="6"/>
+  <text x="170" y="71" text-anchor="middle" fill="#fff" font-weight="bold">users</text>
+  <text x="44" y="105">PK  id : INTEGER</text>
+  <text x="44" y="130">login : TEXT UNIQUE NOT NULL</text>
+  <text x="44" y="155">password : TEXT (хэш)</text>
+  <text x="44" y="180">full_name : TEXT</text>
+  <text x="44" y="205">phone : TEXT</text>
+  <text x="44" y="230">email : TEXT</text>
+  <text x="44" y="255">role : TEXT ('user' | 'admin')</text>
+  <text x="44" y="280">created_at : TEXT</text>
+
+  <rect x="450" y="50" width="280" height="270" fill="#eef9f1" stroke="#2e9e5b" stroke-width="2" rx="6"/>
+  <rect x="450" y="50" width="280" height="30" fill="#2e9e5b" rx="6"/>
+  <text x="590" y="71" text-anchor="middle" fill="#fff" font-weight="bold">requests</text>
+  <text x="464" y="105">PK  id : INTEGER</text>
+  <text x="464" y="130">FK  user_id : INTEGER → users.id</text>
+  <text x="464" y="155">room : TEXT</text>
+  <text x="464" y="180">start_date : TEXT (ГГГГ-ММ-ДД)</text>
+  <text x="464" y="205">payment : TEXT</text>
+  <text x="464" y="230">status : TEXT (Новая / Мероприятие</text>
+  <text x="464" y="248">назначено / Завершено)</text>
+  <text x="464" y="273">review : TEXT</text>
+  <text x="464" y="298">created_at : TEXT</text>
+
+  <line x1="310" y1="130" x2="450" y2="130" stroke="#333" stroke-width="2"/>
+  <text x="318" y="122">1</text>
+  <text x="432" y="122">N</text>
+  <text x="380" y="150" text-anchor="middle" font-size="12">создаёт</text>
+</svg>
+
+################ ФАЙЛ: api4/app.py ################
+"""
+Модуль 4: API магазина (Flask + SQLite), порт 8080.
+Запуск:  DB_PATH=/полный/путь/shop.db python app.py
+
+!!! ВАЖНО: точные названия таблиц/полей и правила обработки лежат в
+!!! Прил_4_ОЗ_КИМ_09.02.07-3-2027.pdf. Ниже - типовая схема магазина.
+!!! На экзамене сверьте имена из блока SCHEMA и словарь STATUS_RU с приложением.
+"""
+import os
+import sqlite3
+from flask import Flask, jsonify, request
+
+DB_PATH = os.environ.get("DB_PATH", "shop.db")
+
+# ---- SCHEMA: поправьте под реальный дамп shop_db.sql ----
+ORDERS_TABLE = "orders"          # id, user_id, status, total, created_at, city, street, house, ...
+ITEMS_TABLE = "order_items"      # id, order_id, product_name, quantity, price
+USERS_TABLE = "users"            # id, first_name, last_name
+
+# ---- Состояния заказа: код в БД -> текст по-русски ----
+STATUS_RU = {
+    "new": "Новый",
+    "paid": "Оплачен",
+    "shipped": "Отправлен",
+    "delivered": "Доставлен",
+    "cancelled": "Отменён",
+}
+
+app = Flask(__name__)
+app.json.ensure_ascii = False        # русский текст не экранируется
+app.json.sort_keys = False           # порядок полей как в коде
+
+
+class BadRequest(Exception):
+    pass
+
+
+def money(v):
+    """Сумма/цена с двумя знаками после запятой."""
+    return f"{float(v):.2f}"
+
+
+def fmt_date(s):
+    """ГГГГ-ММ-ДД[ ...] -> ДД.ММ.ГГГГ."""
+    y, m, d = str(s)[:10].split("-")
+    return f"{d}.{m}.{y}"
+
+
+def build_order(db, o):
+    user = db.execute(f"SELECT * FROM {USERS_TABLE} WHERE id=?", (o["user_id"],)).fetchone()
+    buyer = " ".join(x for x in (user["last_name"], user["first_name"]) if x) if user else ""
+    items = db.execute(f"SELECT * FROM {ITEMS_TABLE} WHERE order_id=? ORDER BY id", (o["id"],)).fetchall()
+    address = ", ".join(str(o[k]) for k in ("city", "street", "house") if k in o.keys() and o[k])
+    return {
+        "id": o["id"],
+        "customer": buyer,                                   # покупатель одной строкой
+        "status": STATUS_RU.get(o["status"], o["status"]),   # состояние по-русски
+        "total": money(o["total"]),
+        "date": fmt_date(o["created_at"]),
+        "address": address,                                  # адрес одной строкой
+        "items_count": len(items),
+        "items": [{
+            "name": i["product_name"],
+            "quantity": i["quantity"],
+            "price": money(i["price"]),
+        } for i in items],
+    }
+
+
+@app.get("/orders")
+def orders():
+    status = request.args.get("status")
+    user_id = request.args.get("user_id")
+    where, params = [], []
+
+    if status is not None:
+        if status not in STATUS_RU and status not in STATUS_RU.values():
+            raise BadRequest("Недопустимое значение параметра status")
+        code = next((k for k, v in STATUS_RU.items() if v == status), status)
+        where.append("status=?")
+        params.append(code)
+    if user_id is not None:
+        if not user_id.isdigit():
+            raise BadRequest("Недопустимое значение параметра user_id")
+        where.append("user_id=?")
+        params.append(int(user_id))
+
+    sql = f"SELECT * FROM {ORDERS_TABLE}"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id ASC"                                # по возрастанию номера
+
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    try:
+        return jsonify([build_order(db, o) for o in db.execute(sql, params).fetchall()])
+    finally:
+        db.close()
+
+
+@app.errorhandler(BadRequest)
+def on_400(e):
+    return jsonify({"error": str(e)}), 400
+
+
+@app.errorhandler(Exception)
+def on_500(e):
+    return jsonify({"error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)

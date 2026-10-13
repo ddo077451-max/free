@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Конференции.РФ{% endblock %}</title>
+  <!-- Bootstrap: скопируйте bootstrap.min.css из публичной папки сервера в static/vendor/ -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="{{ url_for('index') }}">Конференции<span>.РФ</span></a>
+    <nav>
+      {% if user %}
+        {% if user.role == 'admin' %}
+          <a href="{{ url_for('admin') }}">Панель</a>
+        {% else %}
+          <a href="{{ url_for('requests_list') }}">Мои заявки</a>
+          <a href="{{ url_for('request_new') }}">Новая заявка</a>
+        {% endif %}
+        <a href="{{ url_for('logout') }}">Выйти</a>
+      {% else %}
+        <a href="{{ url_for('login') }}">Вход</a>
+        <a href="{{ url_for('register') }}">Регистрация</a>
+      {% endif %}
+    </nav>
+  </header>
+
+  <main class="container-box">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}
+        <div class="flash flash-{{ cat }}">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <p>© 2027 Конференции.РФ — бронирование помещений для Всероссийских конференций</p>
+  </footer>
+</body>
+</html>

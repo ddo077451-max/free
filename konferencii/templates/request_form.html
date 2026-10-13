@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Редактирование заявки' if edit else 'Новая заявка' }} — Конференции.РФ{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>{{ 'Редактирование заявки' if edit else 'Новая заявка' }}</h1>
+  <form method="post" novalidate>
+    <label>Помещение (аудитория, коворкинг, кинозал)
+      <input type="text" name="room" data-testid="req-room" value="{{ form.get('room','') }}"
+             placeholder="Например: Аудитория 101">
+    </label>
+    {% if errors.room %}<p class="field-error">{{ errors.room }}</p>{% endif %}
+
+    <label>Дата начала
+      <input type="text" name="start_date" data-testid="req-date" value="{{ form.get('start_date','') }}"
+             placeholder="ДД.ММ.ГГГГ">
+    </label>
+    {% if errors.start_date %}<p class="field-error">{{ errors.start_date }}</p>{% endif %}
+
+    <label>Способ оплаты
+      <select name="payment" data-testid="req-payment">
+        {% for p in PAYMENTS %}
+          <option value="{{ p }}" {{ 'selected' if form.get('payment') == p else '' }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if errors.payment %}<p class="field-error">{{ errors.payment }}</p>{% endif %}
+
+    <button type="submit" class="btn" data-testid="req-submit">{{ 'Сохранить' if edit else 'Отправить' }}</button>
+  </form>
+</section>
+{% endblock %}
